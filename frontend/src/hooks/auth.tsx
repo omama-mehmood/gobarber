@@ -43,11 +43,12 @@ const AuthProvider: React.FC = ({ children }) => {
         error => {
           const { response } = error;
 
-          if (response.data.message === 'jwt expired') {
+          if (response?.data?.message === 'jwt expired') {
             signOut();
           }
 
-          return Promise.reject(error);
+          // Properly handle promise rejection as Error object
+          return Promise.reject(error instanceof Error ? error : new Error(error.message || 'Unknown error'));
         },
       );
 
@@ -72,31 +73,37 @@ const AuthProvider: React.FC = ({ children }) => {
       error => {
         const { response } = error;
 
-        if (response.data.message === 'jwt expired') {
+        if (response?.data?.message === 'jwt expired') {
           signOut();
         }
 
-        return Promise.reject(error);
+        // Properly handle promise rejection as Error object
+        return Promise.reject(error instanceof Error ? error : new Error(error.message || 'Authentication error'));
       },
     );
   }, [signOut]);
 
   const signIn = useCallback(
     async ({ email, password }) => {
-      const response = await api.post('sessions', {
-        email,
-        password,
-      });
+      try {
+        const response = await api.post('sessions', {
+          email,
+          password,
+        });
 
-      const { token, user } = response.data;
+        const { token, user } = response.data;
 
-      localStorage.setItem('@GoBarber:token', token);
-      localStorage.setItem('@GoBarber:user', JSON.stringify(user));
+        localStorage.setItem('@GoBarber:token', token);
+        localStorage.setItem('@GoBarber:user', JSON.stringify(user));
 
-      api.defaults.headers.authorization = `Bearer ${token}`;
+        api.defaults.headers.authorization = `Bearer ${token}`;
 
-      setupInvalidSessionInterceptor();
-      setData({ token, user });
+        setupInvalidSessionInterceptor();
+        setData({ token, user });
+      } catch (error) {
+        // Ensure proper error handling and rejection as Error object
+        throw error instanceof Error ? error : new Error('Authentication failed');
+      }
     },
     [setupInvalidSessionInterceptor],
   );

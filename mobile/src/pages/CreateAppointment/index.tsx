@@ -8,6 +8,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useAuth } from '../../hooks/auth';
 import { IProvider } from '../Dashboard';
 import api from '../../services/api';
+import { createNameInitials, processProvidersArray } from '../../utils/providerUtils';
 
 import * as S from './styles';
 
@@ -18,6 +19,12 @@ interface IRouteParams {
 interface IAvailabilityItem {
   hour: number;
   available: boolean;
+}
+
+interface IFormattedAvailability {
+  hour: number;
+  available: boolean;
+  formattedHour: string;
 }
 
 const CreateAppointment: React.FC = () => {
@@ -34,46 +41,48 @@ const CreateAppointment: React.FC = () => {
     routeParams.providerId,
   );
 
-  const nameInitials = useMemo(() => {
-    return user.name
-      .split(' ')
-      .map(name => name.charAt(0).toUpperCase())
-      .join('')
-      .substring(0, 2);
-  }, [user.name]);
+  const nameInitials = useMemo(() => createNameInitials(user.name), [user.name]);
 
-  useEffect(() => {
-    api.get<IProvider[]>('providers').then(response => {
-      setProviders(
-        response.data.map(provider =>
-          provider.avatar_url
-            ? provider
-            : {
-                ...provider,
-                nameInitials: provider.name
-                  .split(' ')
-                  .map(name => name.charAt(0).toUpperCase())
-                  .join('')
-                  .substring(0, 2),
-              },
-        ),
-      );
-    });
+  const loadProviders = useCallback(async () => {
+    try {
+      const response = await api.get<IProvider[]>('providers');
+      const processedProviders = processProvidersArray(response.data);
+      setProviders(processedProviders);
+    } catch (error) {
+      console.error('Error loading providers:', error);
+    }
   }, []);
 
-  useEffect(() => {
-    api
-      .get(`providers/${selectedProvider}/day-availability`, {
+  const loadAvailability = useCallback(async () => {
+    try {
+      const response = await api.get(`providers/${selectedProvider}/day-availability`, {
         params: {
           year: selectedDate.getFullYear(),
           month: selectedDate.getMonth() + 1,
           day: selectedDate.getDate(),
         },
-      })
-      .then(response => {
-        setAvailability(response.data);
       });
+      setAvailability(response.data);
+    } catch (error) {
+      console.error('Error loading availability:', error);
+    }
   }, [selectedDate, selectedProvider]);
+
+  useEffect(() => {
+    loadProviders();
+  }, [loadProviders]);
+
+  useEffect(() => {
+    loadAvailability();
+  }, [loadAvailability]);
+
+  const formatAvailabilityHours = useCallback((items: IAvailabilityItem[]): IFormattedAvailability[] => {
+    return items.map(({ hour, available }) => ({
+      hour,
+      available,
+      formattedHour: format(new Date().setHours(hour), 'HH:00'),
+    }));
+  }, []);
 
   const navigateBack = useCallback(() => {
     goBack();
@@ -89,7 +98,6 @@ const CreateAppointment: React.FC = () => {
 
   const handleChangeDate = useCallback((event: any, date: Date | undefined) => {
     if (Platform.OS === 'android') setShowDatePicker(false);
-
     if (date) setSelectedDate(date);
   }, []);
 
@@ -97,46 +105,89 @@ const CreateAppointment: React.FC = () => {
     setSelectedHour(hour);
   }, []);
 
+  const createAppointment = useCallback(async () => {
+    const date = new Date(selectedDate);
+    date.setHours(selectedHour);
+    date.setMinutes(0);
+
+    await api.post('appointments', {
+      provider_id: selectedProvider,
+      date,
+    });
+
+    navigate('AppointmentCreated', { date: date.getTime() });
+  }, [navigate, selectedHour, selectedProvider, selectedDate]);
+
   const handleCreateAppointment = useCallback(async () => {
     try {
-      const date = new Date(selectedDate);
-
-      date.setHours(selectedHour);
-      date.setMinutes(0);
-
-      await api.post('appointments', {
-        provider_id: selectedProvider,
-        date,
-      });
-
-      navigate('AppointmentCreated', { date: date.getTime() });
+      await createAppointment();
     } catch (error) {
       Alert.alert(
-        'erro ao criar agendamento',
+        'Erro ao criar agendamento',
         'Ocorreu um erro ao tentar criar o agendamento, tente novamente',
       );
     }
-  }, [navigate, selectedHour, selectedProvider, selectedDate]);
+  }, [createAppointment]);
 
   const morningAvailability = useMemo(() => {
-    return availability
-      .filter(({ hour }) => hour < 12)
-      .map(({ hour, available }) => ({
-        hour,
-        available,
-        formattedHour: format(new Date().setHours(hour), 'HH:00'),
-      }));
-  }, [availability]);
+    const morningSlots = availability.filter(({ hour }) => hour < 12);
+    return formatAvailabilityHours(morningSlots);
+  }, [availability, formatAvailabilityHours]);
 
   const afternoonAvailability = useMemo(() => {
-    return availability
-      .filter(({ hour }) => hour >= 12)
-      .map(({ hour, available }) => ({
-        hour,
-        available,
-        formattedHour: format(new Date().setHours(hour), 'HH:00'),
-      }));
-  }, [availability]);
+    const afternoonSlots = availability.filter(({ hour }) => hour >= 12);
+    return formatAvailabilityHours(afternoonSlots);
+  }, [availability, formatAvailabilityHours]);
+
+  const renderProviderItem = useCallback(({ item: provider }: { item: IProvider }) => (
+    <S.ProviderContainer
+      onPress={() => handleSelectProvider(provider.id)}
+      selected={provider.id === selectedProvider}
+    >
+      {provider.avatar_url ? (
+        <S.ProviderAvatar
+          selected={provider.id === selectedProvider}
+          source={{ uri: provider.avatar_url }}
+        />
+      ) : (
+        <S.ProviderInitialsContainer
+          selected={provider.id === selectedProvider}
+        >
+          <S.ProviderInitials>
+            {provider.nameInitials}
+          </S.ProviderInitials>
+        </S.ProviderInitialsContainer>
+      )}
+      <S.ProviderName selected={provider.id === selectedProvider}>
+        {provider.name}
+      </S.ProviderName>
+    </S.ProviderContainer>
+  ), [handleSelectProvider, selectedProvider]);
+
+  const renderHourItem = useCallback(({ formattedHour, available, hour }: IFormattedAvailability) => (
+    <S.Hour
+      enabled={available}
+      selected={selectedHour === hour}
+      onPress={() => handleSelectHour(hour)}
+      available={available}
+      key={formattedHour}
+    >
+      <S.HourText selected={selectedHour === hour}>
+        {formattedHour}
+      </S.HourText>
+    </S.Hour>
+  ), [selectedHour, handleSelectHour]);
+
+  const renderUserAvatar = useCallback(() => {
+    if (user.avatar_url) {
+      return <S.UserAvatar source={{ uri: user.avatar_url }} />;
+    }
+    return (
+      <S.UserInitialsContainer>
+        <S.UserInitials>{nameInitials}</S.UserInitials>
+      </S.UserInitialsContainer>
+    );
+  }, [user.avatar_url, nameInitials]);
 
   return (
     <S.Container>
@@ -147,13 +198,7 @@ const CreateAppointment: React.FC = () => {
 
         <S.HeaderTitle>Cabeleireiros</S.HeaderTitle>
 
-        {user.avatar_url ? (
-          <S.UserAvatar source={{ uri: user.avatar_url }} />
-        ) : (
-          <S.UserInitialsContainer>
-            <S.UserInitials>{nameInitials}</S.UserInitials>
-          </S.UserInitialsContainer>
-        )}
+        {renderUserAvatar()}
       </S.Header>
 
       <S.Content>
@@ -163,30 +208,7 @@ const CreateAppointment: React.FC = () => {
             showsHorizontalScrollIndicator={false}
             data={providers}
             keyExtractor={provider => provider.id}
-            renderItem={({ item: provider }) => (
-              <S.ProviderContainer
-                onPress={() => handleSelectProvider(provider.id)}
-                selected={provider.id === selectedProvider}
-              >
-                {provider.avatar_url ? (
-                  <S.ProviderAvatar
-                    selected={provider.id === selectedProvider}
-                    source={{ uri: provider.avatar_url }}
-                  />
-                ) : (
-                  <S.ProviderInitialsContainer
-                    selected={provider.id === selectedProvider}
-                  >
-                    <S.ProviderInitials>
-                      {provider.nameInitials}
-                    </S.ProviderInitials>
-                  </S.ProviderInitialsContainer>
-                )}
-                <S.ProviderName selected={provider.id === selectedProvider}>
-                  {provider.name}
-                </S.ProviderName>
-              </S.ProviderContainer>
-            )}
+            renderItem={renderProviderItem}
           />
         </S.ProvidersListContainer>
 
@@ -215,42 +237,15 @@ const CreateAppointment: React.FC = () => {
 
           <S.Section>
             <S.SectionTitle>Manhã</S.SectionTitle>
-
             <S.SectionContent>
-              {morningAvailability.map(({ formattedHour, available, hour }) => (
-                <S.Hour
-                  enabled={available}
-                  selected={selectedHour === hour}
-                  onPress={() => handleSelectHour(hour)}
-                  available={available}
-                  key={formattedHour}
-                >
-                  <S.HourText selected={selectedHour === hour}>
-                    {formattedHour}
-                  </S.HourText>
-                </S.Hour>
-              ))}
+              {morningAvailability.map(renderHourItem)}
             </S.SectionContent>
           </S.Section>
+          
           <S.Section>
             <S.SectionTitle>Tarde</S.SectionTitle>
-
             <S.SectionContent>
-              {afternoonAvailability.map(
-                ({ formattedHour, available, hour }) => (
-                  <S.Hour
-                    enabled={available}
-                    selected={selectedHour === hour}
-                    onPress={() => handleSelectHour(hour)}
-                    available={available}
-                    key={formattedHour}
-                  >
-                    <S.HourText selected={selectedHour === hour}>
-                      {formattedHour}
-                    </S.HourText>
-                  </S.Hour>
-                ),
-              )}
+              {afternoonAvailability.map(renderHourItem)}
             </S.SectionContent>
           </S.Section>
         </S.Schedule>

@@ -14,11 +14,13 @@ import { FaMoon, FaSun } from 'react-icons/fa';
 import Toggle from 'react-toggle';
 import { ThemeContext } from 'styled-components';
 import { Link } from 'react-router-dom';
+
 import logoLight from '../../assets/logo-light.svg';
 import logo from '../../assets/logo.svg';
 import { useTheme } from '../../hooks/theme';
 import { useAuth } from '../../hooks/auth';
 import api from '../../services/api';
+import { createNameInitials, formatAppointmentData } from '../../utils/providerUtils';
 
 import {
   Container,
@@ -61,6 +63,8 @@ const Dashboard: React.FC = () => {
     MonthAvailabilityItem[]
   >([]);
 
+  const nameInitials = useMemo(() => createNameInitials(user.name), [user.name]);
+
   const handleDateChange = useCallback((day: Date, modifiers: DayModifiers) => {
     if (modifiers.available && !modifiers.disabled) {
       setSelectedDate(day);
@@ -71,60 +75,57 @@ const Dashboard: React.FC = () => {
     setCurrentMonth(month);
   }, []);
 
-  useEffect(() => {
-    api
-      .get(`/providers/${user.id}/month-availability`, {
+  const loadMonthAvailability = useCallback(async () => {
+    try {
+      const response = await api.get(`/providers/${user.id}/month-availability`, {
         params: {
           month: currentMonth.getMonth() + 1,
           year: currentMonth.getFullYear(),
         },
-      })
-      .then(response => {
-        setMonthAvailability(response.data);
       });
+      setMonthAvailability(response.data);
+    } catch (error) {
+      console.error('Error loading month availability:', error);
+    }
   }, [currentMonth, user.id]);
 
-  useEffect(() => {
-    api
-      .get<Appointment[]>('/appointments/me', {
+  const loadAppointments = useCallback(async () => {
+    try {
+      const response = await api.get<Appointment[]>('/appointments/me', {
         params: {
           day: selectedDate.getDate(),
           month: selectedDate.getMonth() + 1,
           year: selectedDate.getFullYear(),
         },
-      })
-      .then(response => {
-        const formattedAppointments = response.data.map(appointment => {
-          return {
-            ...appointment,
-            formattedHour: format(parseISO(appointment.date), 'HH:mm'),
-            user: {
-              ...appointment.user,
-              avatar_url:
-                appointment.user.avatar_url ??
-                appointment.user.name
-                  .split(' ')
-                  .map(name => name.charAt(0).toUpperCase())
-                  .join('')
-                  .substring(0, 2),
-            },
-          };
-        });
-        setAppointments(formattedAppointments);
       });
+      
+      const formattedAppointments = response.data.map(appointment => ({
+        ...formatAppointmentData(appointment),
+        formattedHour: format(parseISO(appointment.date), 'HH:mm'),
+      }));
+      
+      setAppointments(formattedAppointments);
+    } catch (error) {
+      console.error('Error loading appointments:', error);
+    }
   }, [selectedDate]);
 
+  useEffect(() => {
+    loadMonthAvailability();
+  }, [loadMonthAvailability]);
+
+  useEffect(() => {
+    loadAppointments();
+  }, [loadAppointments]);
+
   const disabledDays = useMemo(() => {
-    const dates = monthAvailability
+    return monthAvailability
       .filter(monthDay => monthDay.available === false)
       .map(monthDay => {
         const year = currentMonth.getFullYear();
         const month = currentMonth.getMonth();
-
         return new Date(year, month, monthDay.day);
       });
-
-    return dates;
   }, [currentMonth, monthAvailability]);
 
   const selectedDateAsText = useMemo(() => {
@@ -157,31 +158,97 @@ const Dashboard: React.FC = () => {
     );
   }, [appointments]);
 
-  const nameInitials = useMemo(() => {
-    return user.name
-      .split(' ')
-      .map(name => name.charAt(0).toUpperCase())
-      .join('')
-      .substring(0, 2);
-  }, [user.name]);
+  const renderUserAvatar = useCallback(() => {
+    if (user.avatar_url) {
+      return <img src={user.avatar_url} alt={user.name} />;
+    }
+    return <p>{nameInitials}</p>;
+  }, [user.avatar_url, user.name, nameInitials]);
+
+  const renderAppointmentAvatar = useCallback((appointment: Appointment) => {
+    const isInitials = appointment.user.avatar_url.length === 2;
+    
+    if (isInitials) {
+      return (
+        <Initials>
+          <span>{appointment.user.avatar_url}</span>
+        </Initials>
+      );
+    }
+    
+    return (
+      <img
+        src={appointment.user.avatar_url}
+        alt={appointment.user.name}
+      />
+    );
+  }, []);
+
+  const renderAppointmentItem = useCallback((appointment: Appointment) => (
+    <Appointment key={appointment.id}>
+      <span>
+        <FiClock />
+        {appointment.formattedHour}
+      </span>
+      <div>
+        {renderAppointmentAvatar(appointment)}
+        <strong>{appointment.user.name}</strong>
+      </div>
+    </Appointment>
+  ), [renderAppointmentAvatar]);
+
+  const renderNextAppointment = useCallback(() => {
+    if (!isToday(selectedDate) || !nextAppointment) {
+      return null;
+    }
+
+    return (
+      <NextAppointment>
+        <strong>Atendimento a seguir</strong>
+        <div>
+          {renderAppointmentAvatar(nextAppointment)}
+          <strong>{nextAppointment.user.name}</strong>
+          <span>
+            <FiClock />
+            {nextAppointment.formattedHour}
+          </span>
+        </div>
+      </NextAppointment>
+    );
+  }, [selectedDate, nextAppointment, renderAppointmentAvatar]);
+
+  const renderAppointmentSection = useCallback((title: string, appointmentList: Appointment[]) => (
+    <Section>
+      <strong>{title}</strong>
+      {!appointmentList.length && (
+        <p>Nenhum agendamento neste período</p>
+      )}
+      {appointmentList.map(renderAppointmentItem)}
+    </Section>
+  ), [renderAppointmentItem]);
+
+  const renderLogo = useCallback(() => {
+    return title === 'light' ? (
+      <img src={logoLight} alt="GoBarber" />
+    ) : (
+      <img src={logo} alt="GoBarber" />
+    );
+  }, [title]);
+
+  const renderToggleIcons = useMemo(() => ({
+    checked: <FaMoon color="yellow" size={12} />,
+    unchecked: <FaSun color="yellow" size={12} />,
+  }), []);
 
   return (
     <Container>
       <Header>
         <HeaderContent>
-          {title === 'light' ? (
-            <img src={logoLight} alt="GoBarber" />
-          ) : (
-            <img src={logo} alt="GoBarber" />
-          )}
+          {renderLogo()}
 
           <Profile>
             <Avatar>
-              {user.avatar_url ? (
-                <img src={user.avatar_url} alt={user.name} />
-              ) : (
-                <p>{nameInitials}</p>
-              )}
+              {renderUserAvatar()}
             </Avatar>
 
             <div>
@@ -196,10 +263,7 @@ const Dashboard: React.FC = () => {
             checked={title === 'dark'}
             onChange={toggleTheme}
             className="toggle"
-            icons={{
-              checked: <FaMoon color="yellow" size={12} />,
-              unchecked: <FaSun color="yellow" size={12} />,
-            }}
+            icons={renderToggleIcons}
           />
 
           <button type="button" onClick={signOut}>
@@ -217,91 +281,11 @@ const Dashboard: React.FC = () => {
             <span>{selectedWeekDay}</span>
           </p>
 
-          {isToday(selectedDate) && nextAppointment && (
-            <NextAppointment>
-              <strong>Atendimento a seguir</strong>
-
-              <div>
-                {nextAppointment.user.avatar_url.length === 2 ? (
-                  <Initials>
-                    <span>{nextAppointment.user.avatar_url}</span>
-                  </Initials>
-                ) : (
-                  <img
-                    src={nextAppointment.user.avatar_url}
-                    alt={nextAppointment.user.name}
-                  />
-                )}
-
-                <strong>{nextAppointment.user.name}</strong>
-                <span>
-                  <FiClock />
-                  {nextAppointment.formattedHour}
-                </span>
-              </div>
-            </NextAppointment>
-          )}
-          <Section>
-            <strong>Manhã</strong>
-
-            {!morningAppointments.length && (
-              <p>Nenhum agendamento neste período</p>
-            )}
-
-            {morningAppointments.map(appointment => (
-              <Appointment key={appointment.id}>
-                <span>
-                  <FiClock />
-                  {appointment.formattedHour}
-                </span>
-                <div>
-                  {appointment.user.avatar_url.length === 2 ? (
-                    <Initials>
-                      <span>{appointment.user.avatar_url}</span>
-                    </Initials>
-                  ) : (
-                    <img
-                      src={appointment.user.avatar_url}
-                      alt={appointment.user.name}
-                    />
-                  )}
-
-                  <strong>{appointment.user.name}</strong>
-                </div>
-              </Appointment>
-            ))}
-          </Section>
-          <Section>
-            <strong>Tarde</strong>
-
-            {!afternoonAppointments.length && (
-              <p>Nenhum agendamento neste período</p>
-            )}
-
-            {afternoonAppointments.map(appointment => (
-              <Appointment key={appointment.id}>
-                <span>
-                  <FiClock />
-                  {appointment.formattedHour}
-                </span>
-                <div>
-                  {appointment.user.avatar_url.length === 2 ? (
-                    <Initials>
-                      <span>{appointment.user.avatar_url}</span>
-                    </Initials>
-                  ) : (
-                    <img
-                      src={appointment.user.avatar_url}
-                      alt={appointment.user.name}
-                    />
-                  )}
-
-                  <strong>{appointment.user.name}</strong>
-                </div>
-              </Appointment>
-            ))}
-          </Section>
+          {renderNextAppointment()}
+          {renderAppointmentSection('Manhã', morningAppointments)}
+          {renderAppointmentSection('Tarde', afternoonAppointments)}
         </Schedule>
+        
         <Calendar>
           <DayPicker
             weekdaysShort={['D', 'S', 'T', 'Q', 'Q', 'S', 'S']}
